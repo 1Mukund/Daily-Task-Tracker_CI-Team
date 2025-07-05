@@ -21,11 +21,11 @@ from email.message import EmailMessage
 
 # ────────────────────────────────── CONFIG ────────────────────────────────────
 USERS = [
-    "Alice",   # ⚑ replace with real member names
-    "Bob",
-    "Charlie",
-    "David",
-    "Eva",
+    "Shaurya",   # ⚑ replace with real member names
+    "Mukund",
+    "Anjan",
+    "Pranjal",
+    "Lekha",
 ]
 
 DATA_FILE = Path("tasks.csv")  # or a full path
