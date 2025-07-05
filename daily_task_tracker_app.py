@@ -1,15 +1,14 @@
-
 # daily_task_tracker_app.py
 """
-Streamlit Daily Task Tracker
+Streamlit Daily Task Tracker (multi‑user)
 
 Features
 --------
-* Add / update tasks with Date | Task | Status | Deadline
-* Persist data locally to **tasks.csv** (default) – switch to SQLite/Google Sheets easily
-* Inline editing with **st.data_editor**
-* Helper `send_daily_reminder()` for automated email
-  – schedule via cron / APScheduler / `schedule` lib
+* **Named users** – each task is tagged with its owner so work never mixes.
+* Add / update tasks with **Date | Task | Status | Deadline | User**.
+* Sidebar picker lets each of the 5 members see only their own tasks.
+* Persists to **tasks.csv** (swap to DB later).
+* Email reminder helper unchanged – optional daily cron.
 """
 import streamlit as st
 import pandas as pd
@@ -20,41 +19,65 @@ import smtplib
 import ssl
 from email.message import EmailMessage
 
-# ----- Config --------------------------------------------------------------
-DATA_FILE = Path("tasks.csv")  # CSV in repo root
+# ────────────────────────────────── CONFIG ────────────────────────────────────
+USERS = [
+    "Alice",   # ⚑ replace with real member names
+    "Bob",
+    "Charlie",
+    "David",
+    "Eva",
+]
 
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")          # e.g. "yourbot@gmail.com"
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")      # app‑password / API key
-RECIPIENTS = os.getenv("RECIPIENTS", "").split(",")  # comma‑separated list
-DEFAULT_DASHBOARD_URL = "http://localhost:8501"   # fallback
+DATA_FILE = Path("tasks.csv")  # or a full path
 
-# ----- Data helpers --------------------------------------------------------
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+RECIPIENTS = os.getenv("RECIPIENTS", "").split(",")
+DEFAULT_DASHBOARD_URL = "http://localhost:8501"
+
+# ──────────────────────────────── DATA HELPERS ────────────────────────────────
+
+def _ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Guarantee all required columns exist in DataFrame."""
+    for col, dtype in {
+        "user": "object",
+        "date": "datetime64[ns]",
+        "task": "object",
+        "status": "object",
+        "deadline": "datetime64[ns]",
+    }.items():
+        if col not in df.columns:
+            df[col] = pd.Series(dtype=dtype)
+    return df
+
+
 def load_data() -> pd.DataFrame:
-    """Load existing task data or create an empty DataFrame."""
     if DATA_FILE.exists():
-        return pd.read_csv(DATA_FILE, parse_dates=["date", "deadline"])
-    return pd.DataFrame(columns=["date", "task", "status", "deadline"])
+        df = pd.read_csv(DATA_FILE, parse_dates=["date", "deadline"])
+    else:
+        df = pd.DataFrame()
+    return _ensure_columns(df)
+
 
 def save_data(df: pd.DataFrame) -> None:
     df.to_csv(DATA_FILE, index=False)
 
-# ----- Email reminder ------------------------------------------------------
+# ────────────────────────────── EMAIL REMINDER ────────────────────────────────
+
 def send_daily_reminder() -> None:
-    """Send an email asking recipients to update today's tasks."""
+    """Send an email asking the team to update tasks."""
     if not (EMAIL_SENDER and EMAIL_PASSWORD and any(RECIPIENTS)):
         print("[Reminder] Email creds or recipients missing; skip.")
         return
 
     subject = "Daily Task Tracker – please update your tasks"
     dashboard_url = st.secrets.get("app_url", DEFAULT_DASHBOARD_URL)
-    body = f"""Hi,
-
-This is your automated reminder to update today's tasks.
-
-Dashboard: {dashboard_url}
-
-Regards,
-Task Tracker Bot"""
+    body = (
+        "Hi team,\n\n"
+        "This is your automated reminder to update today's tasks.\n\n"
+        f"Dashboard: {dashboard_url}\n\n"
+        "Regards,\nTask Tracker Bot"
+    )
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -68,10 +91,17 @@ Task Tracker Bot"""
         server.send_message(msg)
     print("[Reminder] Email sent.")
 
-# ----- Streamlit UI --------------------------------------------------------
+# ───────────────────────────────── STREAMLIT UI ───────────────────────────────
+
 def main() -> None:
     st.set_page_config(page_title="Daily Task Tracker", layout="wide")
-    st.title("📋 Daily Task Tracker")
+    st.title("📋 Daily Task Tracker – Multi‑User")
+
+    # ---------- Pick active user ----------
+    with st.sidebar:
+        active_user = st.selectbox("Who's updating tasks?", USERS, key="user_selector")
+        st.markdown("---")
+        st.markdown("**Instructions**:\n- Select your name.\n- Add or edit tasks – you'll only see yours.")
 
     df = load_data()
 
@@ -87,33 +117,45 @@ def main() -> None:
         if submitted and task_name.strip():
             task_date_pd = pd.to_datetime(task_date)
             deadline_pd = pd.to_datetime(deadline)
-            mask = (df["date"] == task_date_pd) & (df["task"] == task_name)
-
-            if mask.any():  # Update
+            mask = (
+                (df["user"] == active_user)
+                & (df["date"] == task_date_pd)
+                & (df["task"] == task_name)
+            )
+            if mask.any():
+                # Update existing row
                 df.loc[mask, ["status", "deadline"]] = [status, deadline_pd]
-            else:           # Append
-                df.loc[len(df)] = [task_date_pd, task_name, status, deadline_pd]
+            else:
+                # Append new row
+                df.loc[len(df)] = [active_user, task_date_pd, task_name, status, deadline_pd]
             save_data(df)
             st.success("Task saved.")
 
-    # ---------- Task table  ----------
-    st.subheader("Task list")
-    df_display = df.sort_values(["date", "deadline"]).reset_index(drop=True)
+    # ---------- Display + inline edit ----------
+    st.subheader(f"Tasks for **{active_user}**")
+    user_df = df[df["user"] == active_user].sort_values(["date", "deadline"]).reset_index(drop=True)
+
     edited_df = st.data_editor(
-        df_display,
+        user_df,
         num_rows="dynamic",
         use_container_width=True,
         key="editor",
     )
     if st.button("💾 Save changes"):
-        save_data(edited_df)
+        # Overwrite only the active user's slice, keep others intact
+        other_df = df[df["user"] != active_user]
+        edited_df["user"] = active_user  # ensure column retained
+        df_updated = pd.concat([other_df, edited_df], ignore_index=True)
+        save_data(df_updated)
         st.success("Updates saved.")
+        df = df_updated  # refresh in session
 
     st.markdown("---")
     st.caption(
-        "Schedule `send_daily_reminder()` via `cron`, `schedule`, or any serverless job "
-        "to automate daily email reminders."
+        "Schedule `send_daily_reminder()` (see helper in repo) to email the whole team every morning."
     )
+
 
 if __name__ == "__main__":
     main()
+
